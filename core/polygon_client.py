@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date, timedelta
 from typing import Any, Dict, Optional
 
 import requests
@@ -38,3 +39,36 @@ class PolygonClient:
                 log.warning("Polygon GET failed (%s) attempt %s: %s", path, attempt, exc)
 
         raise RuntimeError(f"Polygon GET failed after {self.max_retries} tries: {last_exc}")
+
+    # ---------- convenience helpers ----------
+
+    def get_latest_option_agg(
+        self,
+        option_ticker: str,
+        *,
+        lookback_days: int = 7,
+        multiplier: int = 1,
+        timespan: str = "day",
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch the most recent aggregate bar for an option, over a short lookback window.
+
+        Uses /v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}
+        and returns the LAST bar in the response (most recent).
+
+        Returns None if no data.
+        """
+        today = date.today()
+        start = today - timedelta(days=lookback_days)
+
+        path = f"/v2/aggs/ticker/{option_ticker}/range/{multiplier}/{timespan}/{start}/{today}"
+        params: Dict[str, Any] = {
+            "sort": "asc",   # older -> newer so last element is latest bar
+            "limit": 5000,   # Polygon caps this, but we don't expect that many points
+        }
+
+        data = self.get(path, params)
+        results = data.get("results") or []
+        if not results:
+            return None
+        return results[-1]
