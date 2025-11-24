@@ -3,28 +3,58 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 Direction = Literal["bull", "bear", "neutral"]
 
 
 @dataclass
 class Signal:
-    bot: str
+    """
+    Core signal object passed around the bus and into the dispatcher.
+
+    kind        – high‑level category, e.g. "CHEAP_LOTTOS", "UNUSUAL", "TREND_BREAKDOWN"
+    symbol      – ticker for the instrument this signal is about
+    direction   – "bull", "bear", or "neutral"
+    conviction  – 0–1 float, higher = stronger conviction
+    reasons     – human‑readable bullet points explaining why this fired
+    extra       – any additional structured metadata
+    """
+
+    kind: str
     symbol: str
     direction: Direction
-    conviction: float  # 0.0 – 1.0
+    conviction: float
     reasons: List[str] = field(default_factory=list)
-    timeframe: str = "intraday"  # "scalp" | "swing" | ...
-    risk_tag: str = "normal"     # "lotto" | "aggressive" | "normal" | "conservative"
-    price: Optional[float] = None
-    extra: Dict[str, object] = field(default_factory=dict)
-    ts: datetime = field(default_factory=datetime.utcnow)
+    extra: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
 class MarketContext:
-    trend: Literal["bull", "bear", "chop"] = "chop"
-    vol_regime: Literal["low", "normal", "high"] = "normal"
-    risk_off: bool = False
-    computed_at: datetime = field(default_factory=datetime.utcnow)
+    """
+    Snapshot of overall market regime that bots / aggregator can use
+    to tune behavior.
+    """
+
+    as_of: datetime
+    trend: str          # e.g. "bull", "bear", "range"
+    vol_regime: str     # e.g. "low", "normal", "high"
+    risk_off: bool      # true if broad risk‑off conditions detected
+
+
+@dataclass
+class OptionPlay:
+    """
+    Optional attached options idea for a given stock signal.
+    Used by core.option_picker and attached into Signal.extra["options_play"].
+    """
+
+    ticker: str
+    expiry: str                 # ISO date string, e.g. "2025-12-19"
+    strike: float
+    kind: Literal["call", "put"]
+    side: Literal["buy", "sell"] = "buy"
+    size: Optional[int] = None  # contracts
+    last: Optional[float] = None
+    delta: Optional[float] = None
+    notes: Optional[str] = None
