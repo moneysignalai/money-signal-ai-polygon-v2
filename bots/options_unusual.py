@@ -1,10 +1,7 @@
 # bots/options_unusual.py
 
-from __future__ import annotations
-
 import logging
 from datetime import date, datetime
-from typing import List, Dict, Any, Optional
 
 from core.models import Signal
 from core.polygon_client import PolygonClient
@@ -14,7 +11,7 @@ log = logging.getLogger(__name__)
 _MAX_CONTRACTS_PER_UNDERLYING = 25
 
 
-def _fetch_contracts_for_underlying(client: PolygonClient, underlying: str) -> List[Dict[str, Any]]:
+def _fetch_contracts_for_underlying(client: PolygonClient, underlying: str) -> list[dict]:
     """
     Use Polygon v3 reference contracts to get a small, recent set of options
     for the given underlying.
@@ -22,7 +19,7 @@ def _fetch_contracts_for_underlying(client: PolygonClient, underlying: str) -> L
     Docs: /v3/reference/options/contracts
     """
     path = "/v3/reference/options/contracts"
-    params: Dict[str, Any] = {
+    params = {
         "underlying_ticker": underlying.upper(),
         "expired": "false",
         "order": "asc",
@@ -36,25 +33,28 @@ def _fetch_contracts_for_underlying(client: PolygonClient, underlying: str) -> L
     return results
 
 
-def _fetch_latest_agg(client: PolygonClient, option_ticker: str) -> Optional[Dict[str, Any]]:
+def _fetch_latest_minute_agg(client: PolygonClient, option_ticker: str) -> dict | None:
     """
-    Get the latest aggregate bar for an option contract.
+    Get the latest 1‑minute aggregate for an option contract.
 
-    We deliberately use daily bars over a short lookback to avoid
-    same‑day 400 issues on /v2/aggs.
-
-    Under the hood this calls PolygonClient.get_latest_option_agg.
+    Docs: /v2/aggs/ticker/{ticker}/range/1/min/{from}/{to}
     """
-    return client.get_latest_option_agg(
-        option_ticker,
-        lookback_days=7,
-        multiplier=1,
-        timespan="day",
-    )
+    today = date.today().isoformat()
+    path = f"/v2/aggs/ticker/{option_ticker}/range/1/min/{today}/{today}"
+    params = {
+        "limit": 1,
+        "sort": "desc",
+    }
+
+    data = client.get(path, params)
+    results = data.get("results") or []
+    if not results:
+        return None
+    return results[0]
 
 
 def run(
-    client: PolygonClient,
+    client,
     bus,
     ctx,
     *,
@@ -106,7 +106,7 @@ def run(
                 continue
 
             try:
-                agg = _fetch_latest_agg(client, ticker)
+                agg = _fetch_latest_minute_agg(client, ticker)
             except Exception as exc:  # noqa: BLE001
                 log.debug("UNUSUAL: agg error for %s: %s", ticker, exc)
                 continue
@@ -152,8 +152,9 @@ def run(
                 "kind": "unusual_v2",
             }
 
+            # NOTE: first positional arg is the signal type
             sig = Signal(
-                kind="UNUSUAL",
+                "UNUSUAL",
                 symbol=ticker,
                 direction=direction,
                 conviction=round(conviction, 2),
