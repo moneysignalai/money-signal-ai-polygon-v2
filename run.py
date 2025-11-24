@@ -10,12 +10,14 @@ from core.alerting import TelegramConfig, Dispatcher
 from core.aggregator import aggregate_signals
 from core.bus import SignalBus
 from core.context import compute_market_context
-from core.option_picker import pick_simple_option_for_signal
 from core.polygon_client import PolygonClient
 from core.status_report_v2 import StatusReporter
 
-from bots.options_cheap_lottos import run as run_cheap_lottos
-from bots.options_unusual import run as run_unusual
+# BOTS
+# (Options bots disabled due to Polygon snapshot 404)
+# from bots.options_cheap_lottos import run as run_cheap_lottos
+# from bots.options_unusual import run as run_unusual
+
 from bots.volume_monster import run as run_volume_monster
 from bots.orb_breakout import run as run_orb_breakout
 from bots.dark_pool_radar import run as run_dark_pool_radar
@@ -24,7 +26,6 @@ from bots.trend_breakdown import run as run_trend_breakdown
 from bots.squeeze_v2 import run as run_squeeze_v2
 from bots.squeeze_down_v2 import run as run_squeeze_down_v2
 from bots.earnings_momentum import run as run_earnings_momentum
-
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +40,7 @@ def _run_bot_safely(bot_name: str, fn, status_reporter: StatusReporter, *args, *
         fn(*args, **kwargs)
         runtime = perf_counter() - start
         status_reporter.record_success(bot_name, runtime)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         runtime = perf_counter() - start
         status_reporter.record_error(bot_name, exc, runtime)
         log.exception("Bot %s failed: %s", bot_name, exc)
@@ -63,9 +64,10 @@ def main() -> None:
         bot_token=settings.telegram_bot_token,
         chat_id=settings.telegram_status_chat_id or settings.telegram_chat_id,
     )
+
     status_reporter = StatusReporter(
         tg_config=status_tg_config,
-        report_interval_seconds=600,  # heartbeat every 10 min
+        report_interval_seconds=600,  # 10‑min heartbeat
     )
 
     log.info("Starting v2 scanner loop...")
@@ -80,32 +82,12 @@ def main() -> None:
                 ctx.risk_off,
             )
 
-            # 1) Run all bots safely, recording status
-            _run_bot_safely(
-                "cheap_lottos",
-                run_cheap_lottos,
-                status_reporter,
-                client,
-                bus,
-                ctx,
-                universe=settings.underlying_universe,
-                min_notional=settings.cheap_min_notional,
-                max_premium=settings.cheap_max_premium,
-                min_volume=settings.cheap_min_volume,
-            )
+            # ---------------------------------------------------------
+            # BOTS (option bots disabled temporarily)
+            # ---------------------------------------------------------
 
-            _run_bot_safely(
-                "unusual_sweeps",
-                run_unusual,
-                status_reporter,
-                client,
-                bus,
-                ctx,
-                universe=settings.underlying_universe,
-                min_notional=settings.unusual_min_notional,
-                min_size=settings.unusual_min_size,
-                max_dte=settings.unusual_max_dte,
-            )
+            # _run_bot_safely("cheap_lottos", run_cheap_lottos, status_reporter, ...)
+            # _run_bot_safely("unusual_sweeps", run_unusual, status_reporter, ...)
 
             _run_bot_safely(
                 "volume_monster",
@@ -223,36 +205,29 @@ def main() -> None:
                 min_dollar_vol=settings.earnings_min_dollar_vol,
             )
 
-            # 2) Aggregate & dispatch
+            # ---------------------------------------------------------
+            # 2) Aggregate → Dispatch
+            # ---------------------------------------------------------
+
             raw_signals = bus.drain()
             if raw_signals:
                 log.info("Collected %s raw signals", len(raw_signals))
 
             final_signals = aggregate_signals(raw_signals, ctx)
 
-            # Attach options plays to stock signals
-            if settings.option_picker_enabled:
-                for sig in final_signals:
-                    # crude: only attach if symbol looks like underlying (no space)
-                    if " " in sig.symbol:
-                        continue
-                    opt = pick_simple_option_for_signal(
-                        sig,
-                        client,
-                        target_dte=settings.option_picker_target_dte,
-                        min_dte=settings.option_picker_min_dte,
-                        max_dte=settings.option_picker_max_dte,
-                    )
-                    if opt:
-                        sig.extra["options_play"] = opt
+            # No option picker right now (due to Polygon 404)
+            # But the block remains for future support
 
             for sig in final_signals:
                 dispatcher.dispatch(sig, ctx)
 
+            # ---------------------------------------------------------
             # 3) Status heartbeat
+            # ---------------------------------------------------------
+
             status_reporter.maybe_report()
 
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.exception("Error in main loop: %s", exc)
 
         log.info("Sleeping %s seconds...", settings.scan_interval_seconds)
