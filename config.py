@@ -18,12 +18,12 @@ class Settings:
     # Base universe for all equity/option bots
     underlying_universe: tuple = ("SPY", "QQQ", "TSLA", "NVDA")
 
-    # Cheap lotto options  (DISABLED FOR NOW)
+    # Cheap lotto options
     cheap_min_notional: float = 50_000.0
     cheap_max_premium: float = 1.50
     cheap_min_volume: int = 100
 
-    # UNUSUAL sweeps  (DISABLED FOR NOW)
+    # UNUSUAL sweeps
     unusual_min_notional: float = 100_000.0
     unusual_min_size: int = 50
     unusual_max_dte: int = 45
@@ -76,8 +76,8 @@ class Settings:
     earnings_min_rvol: float = 2.0
     earnings_min_dollar_vol: float = 10_000_000.0
 
-    # Option picker (DISABLED — Polygon snapshots 404)
-    option_picker_enabled: bool = False
+    # Option picker (now ON again)
+    option_picker_enabled: bool = True
     option_picker_target_dte: int = 30
     option_picker_min_dte: int = 7
     option_picker_max_dte: int = 60
