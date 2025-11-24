@@ -1,68 +1,69 @@
 # core/aggregator.py
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
-from typing import Dict, Iterable, List, Tuple
+from typing import List
 
-from .models import Signal, MarketContext
+from core.context import MarketContext
+from core.models import Signal
 
-
-def _combine_convictions(convictions: Iterable[float]) -> float:
-    """1 - Π(1 - p_i) style combination."""
-    prob_not = 1.0
-    for p in convictions:
-        p = max(0.0, min(1.0, p))
-        prob_not *= (1.0 - p)
-    return 1.0 - prob_not
+log = logging.getLogger(__name__)
 
 
-def aggregate_signals(signals: List[Signal], ctx: MarketContext, min_conviction: float = 0.4) -> List[Signal]:
-    grouped: Dict[Tuple[str, str], List[Signal]] = defaultdict(list)
-    for s in signals:
-        grouped[(s.symbol, s.direction)].append(s)
+def aggregate_signals(signals: List[Signal], ctx: MarketContext) -> List[Signal]:
+    """
+    Very lightweight, robust signal aggregator.
+
+    - Groups signals by (symbol, direction)
+    - Within each group:
+        * picks the highest-conviction signal as the "winner"
+        * merges reasons (deduped, order-preserving)
+        * merges extra dicts (later keys overwrite earlier)
+    - Does NOT depend on any optional attributes like `timeframe`.
+
+    If you want to add more advanced logic later (e.g. weighting by
+    bot type, risk_off filtering, etc.), you can build it on top of
+    this without introducing hard dependencies on extra fields.
+    """
+    if not signals:
+        return []
+
+    grouped: dict[tuple[str, str], list[Signal]] = defaultdict(list)
+
+    for sig in signals:
+        key = (sig.symbol, sig.direction)
+        grouped[key].append(sig)
 
     final: List[Signal] = []
 
     for (symbol, direction), group in grouped.items():
-        convictions = [s.conviction for s in group]
-        combined_conviction = _combine_convictions(convictions)
-        reasons: List[str] = []
-        price = None
-        timeframe = group[0].timeframe
-        risk_tag = group[0].risk_tag
+        if not group:
+            continue
 
-        bots = sorted({s.bot for s in group})
-        extra_combined: Dict[str, object] = {}
+        # pick highest-conviction signal in the group
+        best = max(group, key=lambda s: getattr(s, "conviction", 0.0))
 
+        # merge reasons, preserving order and removing duplicates
+        merged_reasons: list[str] = []
         for s in group:
-            for r in s.reasons:
-                if r not in reasons:
-                    reasons.append(r)
-            if s.price is not None:
-                price = s.price
-            for k, v in s.extra.items():
-                extra_combined[f"{s.bot}.{k}"] = v
+            for r in getattr(s, "reasons", []) or []:
+                if r not in merged_reasons:
+                    merged_reasons.append(r)
 
-        # regime gating
-        if ctx.risk_off and direction == "bull" and combined_conviction < 0.7:
-            continue
-        if ctx.trend == "bull" and direction == "bear" and combined_conviction < 0.6:
-            continue
+        # merge extra dicts (later signals can overwrite keys)
+        merged_extra: dict = {}
+        for s in group:
+            extra = getattr(s, "extra", {}) or {}
+            if isinstance(extra, dict):
+                merged_extra.update(extra)
 
-        if combined_conviction < min_conviction:
-            continue
+        # mutate the chosen signal in-place so we don't need to know
+        # the exact __init__ signature of Signal.
+        best.reasons = merged_reasons
+        best.extra = merged_extra
 
-        merged = Signal(
-            bot="+".join(bots),
-            symbol=symbol,
-            direction=direction,  # type: ignore[arg-type]
-            conviction=combined_conviction,
-            reasons=reasons,
-            timeframe=timeframe,
-            risk_tag=risk_tag,
-            price=price,
-            extra=extra_combined,
-        )
-        final.append(merged)
+        final.append(best)
 
+    log.debug("aggregate_signals: input=%d, output=%d", len(signals), len(final))
     return final
