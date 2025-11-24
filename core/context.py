@@ -33,14 +33,13 @@ def compute_market_context(client: PolygonClient) -> MarketContext:
 
     NOTE: This implementation is intentionally simple and robust so that
     the main loop can never die here. If you had more detailed logic
-    before (e.g. based on SPY / VIX / TLT), that can be re‑added on top
+    before (e.g. based on SPY / VIX / TLT), that can be re-added on top
     of this, as long as we *always* construct MarketContext with `as_of`.
     """
     now = datetime.now(timezone.utc)
 
-    # --- Placeholder logic: keep it safe & boring ---
-    # In case you want something a bit more nuanced later, you can
-    # fetch aggregates here and set these three fields accordingly.
+    # Placeholder logic; safe defaults. You can wire in real logic using `client`
+    # (e.g. SPY trend, VIX level, TLT risk-off) later.
     trend = "unknown"
     vol_regime = "normal"
     risk_off = False
