@@ -32,7 +32,13 @@ logging.basicConfig(
 log = logging.getLogger("runner")
 
 
-def _run_bot_safely(bot_name: str, fn, status_reporter: StatusReporter, *args, **kwargs) -> None:
+def _run_bot_safely(
+    bot_name: str,
+    fn,
+    status_reporter: StatusReporter,
+    *args,
+    **kwargs,
+) -> None:
     start = perf_counter()
     try:
         fn(*args, **kwargs)
@@ -164,7 +170,7 @@ def main() -> None:
                 client,
                 bus,
                 ctx,
-                universe=settings.underlying_universe,  # ✅ FIXED: now a tuple, not a float
+                universe=settings.underlying_universe,
                 min_price=settings.trend_breakdown_min_price,
                 max_price=settings.trend_breakdown_max_price,
                 min_dollar_vol=settings.trend_breakdown_min_dollar_vol,
@@ -202,7 +208,7 @@ def main() -> None:
                 move_min_down_pct=settings.squeeze_down_move_min_pct,
                 intraday_min_down_pct=settings.squeeze_down_intraday_min_pct,
                 min_rvol=settings.squeeze_down_min_rvol,
-                min_dollar_vol=settings.squeeze_down_min_dollar_vol,
+                min_dollar_vol=settings.squeeze_down_min_dollar,
                 max_dist_from_low_pct=settings.squeeze_down_max_dist_from_low_pct,
             )
 
