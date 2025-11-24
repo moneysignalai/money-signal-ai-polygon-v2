@@ -1,10 +1,10 @@
 # bots/trend_breakdown.py
+
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict
 from datetime import date, timedelta
-from typing import List, Dict, Any
+from typing import List
 
 from core.models import Signal
 from core.polygon_client import PolygonClient
@@ -12,53 +12,30 @@ from core.polygon_client import PolygonClient
 log = logging.getLogger(__name__)
 
 
-def _fetch_daily_bars(
+def _fetch_daily_window(
     client: PolygonClient,
     symbol: str,
-    lookback: int,
-) -> List[Dict[str, Any]]:
+    days_back: int,
+) -> List[dict]:
     """
-    Fetch a window of daily bars and return them sorted by time ascending.
-    We over-fetch a bit and then trim to the last (lookback + 1) bars.
+    Fetch a window of daily bars for the symbol.
+
+    We over‑fetch in calendar days to safely cover `days_back` trading sessions.
     """
     today = date.today()
-    # Over-fetch to account for weekends/holidays
-    start = today - timedelta(days=lookback * 3)
+    from_date = (today - timedelta(days=days_back * 3)).isoformat()
+    to_date = today.isoformat()
 
-    path = f"/v2/aggs/ticker/{symbol.upper()}/range/1/day/{start.isoformat()}/{today.isoformat()}"
-    params = {"limit": 500, "sort": "asc"}
+    path = f"/v2/aggs/ticker/{symbol.upper()}/range/1/day/{from_date}/{to_date}"
+    params = {
+        "adjusted": "true",
+        "sort": "asc",
+        "limit": 500,
+    }
 
     data = client.get(path, params)
     bars = data.get("results") or []
-    if not bars:
-        return []
-
-    # Keep only the last (lookback + 1) bars so we have:
-    #  - prior window: previous `lookback` bars
-    #  - current bar: last bar
-    needed = lookback + 1
-    if len(bars) > needed:
-        bars = bars[-needed:]
     return bars
-
-
-def _compute_rvol(bars: List[Dict[str, Any]]) -> float:
-    """
-    Compute relative volume = today's volume / average of prior bars.
-    bars must be sorted ascending, last bar = "today".
-    """
-    if len(bars) < 2:
-        return 1.0
-
-    vols = [float(b.get("v") or 0.0) for b in bars]
-    today_vol = vols[-1]
-    prior = vols[:-1]
-
-    avg_prior = sum(prior) / len(prior) if prior else 0.0
-    if avg_prior <= 0:
-        return 1.0
-
-    return today_vol / avg_prior
 
 
 def run(
@@ -74,122 +51,89 @@ def run(
     min_rvol_breakdown: float,
 ) -> None:
     """
-    Bearish trend breakdown bot (mirror of trend breakout).
+    Trend breakdown bot (mirror of trend breakout, but to the downside).
 
-    Logic (per symbol):
-      - Get last `breakdown_lookback + 1` daily bars.
-      - Last close must be within [min_price, max_price].
-      - Last dollar volume (close * volume) >= min_dollar_vol.
-      - Last close breaks the prior N‑day support:
-          close_today < min(prior_closes)
-      - Relative volume >= min_rvol_breakdown.
-      - Direction = BEAR.
-    Conviction is scaled by:
-      - Strength of breakdown vs prior low
-      - Relative volume
-      - Market context (bearish/risk-off boosts)
+    Rough logic per symbol:
+      - Get last `breakdown_lookback + 1` daily bars
+      - Today's close must be:
+          * within [min_price, max_price]
+          * below the prior N‑day low (fresh breakdown)
+          * with dollar volume >= min_dollar_vol
+          * with relative volume >= min_rvol_breakdown
+      - Emit a bearish TREND_BREAKDOWN signal.
     """
-    if breakdown_lookback <= 1:
-        log.warning("trend_breakdown: breakdown_lookback <= 1, nothing to do")
-        return
+    today = date.today()
 
     for symbol in universe:
         try:
-            bars = _fetch_daily_bars(client, symbol, breakdown_lookback)
+            bars = _fetch_daily_window(client, symbol, breakdown_lookback + 1)
         except Exception as exc:  # noqa: BLE001
             log.warning("trend_breakdown: failed to fetch bars for %s: %s", symbol, exc)
             continue
 
         if len(bars) < breakdown_lookback + 1:
-            log.debug(
-                "trend_breakdown: not enough bars for %s (have=%d need=%d)",
-                symbol,
-                len(bars),
-                breakdown_lookback + 1,
-            )
+            log.debug("trend_breakdown: not enough bars for %s", symbol)
             continue
 
-        # bars sorted asc; last = most recent
-        last_bar = bars[-1]
-        prior_bars = bars[:-1]
+        # Use only the most recent window
+        recent = bars[-(breakdown_lookback + 1) :]
+        prior = recent[:-1]
+        today_bar = recent[-1]
 
-        close = float(last_bar.get("c") or 0.0)
-        volume = float(last_bar.get("v") or 0.0)
+        close = float(today_bar.get("c") or 0.0)
+        high = float(today_bar.get("h") or 0.0)
+        low = float(today_bar.get("l") or 0.0)
+        volume = float(today_bar.get("v") or 0.0)
 
-        if close <= 0:
+        if close <= 0 or volume <= 0:
             continue
 
-        # Price band filter
         if close < min_price or close > max_price:
             continue
 
-        # Dollar volume filter
         dollar_vol = close * volume
         if dollar_vol < min_dollar_vol:
             continue
 
-        # Compute support level from prior closes
-        prior_closes = [float(b.get("c") or 0.0) for b in prior_bars if b.get("c") is not None]
-        if len(prior_closes) < breakdown_lookback:
+        # Prior N‑day low
+        prior_low = min(float(bar.get("l") or 0.0) for bar in prior if bar.get("l") is not None)
+        if prior_low <= 0:
             continue
 
-        support = min(prior_closes[-breakdown_lookback:])
-
-        # Must clearly break that support
-        if close >= support:
+        # Require a breakdown: today's close below prior N‑day low
+        if close >= prior_low:
             continue
 
-        # Relative volume threshold
-        rvol = _compute_rvol(bars)
-        if rvol < float(min_rvol_breakdown):
+        # Relative volume vs prior N sessions
+        avg_vol = sum(float(bar.get("v") or 0.0) for bar in prior) / max(len(prior), 1)
+        rvol = volume / avg_vol if avg_vol > 0 else 0.0
+        if rvol < min_rvol_breakdown:
             continue
 
-        # Breakdown magnitude (% below prior support)
-        breakdown_pct = (support - close) / support * 100.0 if support > 0 else 0.0
-
-        # --- Conviction scoring ---
-        # Base
-        conviction = 0.6
-
-        # Boost from breakdown strength
-        if breakdown_pct > 1.0:
-            conviction += min(breakdown_pct / 10.0, 0.2)  # cap
-
-        # Boost from relative volume
-        if rvol > 1.0:
-            conviction += min((rvol - 1.0) / 3.0, 0.15)
-
-        # Market context adjustments
-        # ctx.trend might be "bull", "bear", "sideways" etc.
-        if getattr(ctx, "trend", "").lower().startswith("bear"):
-            conviction += 0.1
-        if getattr(ctx, "risk_off", False):
-            conviction += 0.05
-        if getattr(ctx, "vol_regime", "").lower() in ("high", "elevated"):
-            conviction += 0.05
-
-        conviction = max(0.6, min(conviction, 0.99))
+        # Strength of breakdown: deeper close + higher rvol = more conviction
+        depth = max(0.0, (prior_low - close) / prior_low)  # % below prior low
+        raw_conv = 0.5 + depth * 1.5 + (rvol - min_rvol_breakdown) * 0.1
+        conviction = max(0.6, min(raw_conv, 0.99))
 
         reasons = [
             "trend_breakdown",
-            f"price≈{close:.2f}",
-            f"support≈{support:.2f}",
-            f"breakdown≈{breakdown_pct:.1f}%",
-            f"rvol≈{rvol:.1f}",
+            f"close={close:.2f}",
+            f"prior_{breakdown_lookback}d_low={prior_low:.2f}",
+            f"rvol≈{rvol:.1f}x",
             f"dollar_vol≈${int(dollar_vol):,}",
         ]
 
         extra = {
+            "underlying": symbol,
             "kind": "trend_breakdown_v2",
-            "symbol": symbol,
             "close": close,
-            "support": support,
-            "breakdown_pct": breakdown_pct,
+            "high": high,
+            "low": low,
             "volume": volume,
             "dollar_vol": dollar_vol,
+            "prior_low": prior_low,
             "rvol": rvol,
-            "lookback": breakdown_lookback,
-            "market_ctx": asdict(ctx),
+            "as_of": today.isoformat(),
         }
 
         sig = Signal(
@@ -200,11 +144,13 @@ def run(
             reasons=reasons,
             extra=extra,
         )
-        log.info(
-            "trend_breakdown: %s breakdown %.1f%% rvol=%.2f dollar_vol=%.0f",
-            symbol,
-            breakdown_pct,
-            rvol,
-            dollar_vol,
-        )
         bus.publish(sig)
+
+        log.info(
+            "trend_breakdown: %s breakdown close=%.2f < prior_low=%.2f rvol=%.1f dollar_vol≈$%s",
+            symbol,
+            close,
+            prior_low,
+            rvol,
+            int(dollar_vol),
+        )
