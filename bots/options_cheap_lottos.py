@@ -1,122 +1,164 @@
 # bots/options_cheap_lottos.py
-from __future__ import annotations
 
 import logging
-from typing import Iterable, List
+from datetime import date, datetime
 
-from core.models import Signal, MarketContext
-from core.bus import SignalBus
+from core.models import Signal
 from core.polygon_client import PolygonClient
-from core.options_utils import parse_polygon_option_ticker, format_option_label
 
 log = logging.getLogger(__name__)
 
+# to keep API usage sane; we only inspect a small slice per underlying
+_MAX_CONTRACTS_PER_UNDERLYING = 25
 
-def _scan_underlying(
-    client: PolygonClient,
-    symbol: str,
-    min_notional: float,
-    max_premium: float,
-    min_volume: int,
-) -> Iterable[Signal]:
+
+def _fetch_contracts_for_underlying(client: PolygonClient, underlying: str) -> list[dict]:
     """
-    Very simple "cheap lotto" logic:
-      - Pull option snapshot for an underlying
-      - Look for cheap contracts with meaningful volume / notional
+    Use Polygon v3 reference contracts to get a small, recent set of options
+    for the given underlying.
+
+    Docs: /v3/reference/options/contracts
     """
-    path = "/v3/snapshot/options"
+    path = "/v3/reference/options/contracts"
     params = {
-        "underlying_ticker": symbol,
-        "limit": 50,
-        "sort": "day.volume",
+        "underlying_ticker": underlying.upper(),
+        "expired": "false",
+        "order": "asc",
+        "sort": "expiration_date",
+        "limit": _MAX_CONTRACTS_PER_UNDERLYING,
+    }
+    data = client.get(path, params)
+    results = data.get("results") or []
+    if not results:
+        log.info("Cheap lottos: no contracts returned for %s", underlying)
+    return results
+
+
+def _fetch_latest_minute_agg(client: PolygonClient, option_ticker: str) -> dict | None:
+    """
+    Get the latest 1‑minute aggregate for an option contract.
+
+    Docs: /v2/aggs/ticker/{ticker}/range/1/min/{from}/{to}
+    """
+    today = date.today().isoformat()
+    path = f"/v2/aggs/ticker/{option_ticker}/range/1/min/{today}/{today}"
+    params = {
+        "limit": 1,
+        "sort": "desc",
     }
 
-    try:
-        data = client.get(path, params)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("Cheap lotto: failed to fetch options for %s: %s", symbol, exc)
-        return []
-
+    data = client.get(path, params)
     results = data.get("results") or []
-    signals: List[Signal] = []
-
-    for row in results:
-        day = row.get("day") or {}
-        last_quote = row.get("last_quote") or {}
-        underlying = row.get("underlying_asset") or {}
-
-        volume = int(day.get("volume") or 0)
-        last_price = float(day.get("close") or last_quote.get("bid") or 0.0)
-
-        if volume < min_volume:
-            continue
-        if last_price <= 0 or last_price > max_premium:
-            continue
-
-        notional = last_price * volume * 100.0
-        if notional < min_notional:
-            continue
-
-        option_symbol = row.get("ticker") or "UNKNOWN"
-        parsed = parse_polygon_option_ticker(option_symbol)
-        cp = parsed.cp
-        direction = "bull" if cp == "C" else "bear" if cp == "P" else "neutral"
-
-        underlying_price = float(underlying.get("price") or 0.0) if underlying else None
-        label = format_option_label(parsed)
-
-        base_conv = 0.55
-        if notional >= min_notional * 3:
-            base_conv += 0.15
-        if volume >= min_volume * 3:
-            base_conv += 0.1
-
-        base_conv = max(0.0, min(1.0, base_conv))
-
-        sig = Signal(
-            bot="cheap_lottos",
-            symbol=label,  # pretty label
-            direction=direction,  # type: ignore[arg-type]
-            conviction=base_conv,
-            reasons=[
-                "cheap_premium",
-                "elevated_volume",
-                f"underlying={symbol}",
-            ],
-            timeframe="intraday",
-            risk_tag="lotto",
-            price=last_price,
-            extra={
-                "contract_ticker": option_symbol,
-                "underlying": symbol,
-                "volume": volume,
-                "notional": notional,
-                "underlying_price": underlying_price,
-            },
-        )
-        signals.append(sig)
-
-    return signals
+    if not results:
+        return None
+    return results[0]
 
 
 def run(
-    client: PolygonClient,
-    bus: SignalBus,
-    ctx: MarketContext,
+    client,
+    bus,
+    ctx,
     *,
-    universe: Iterable[str],
+    universe: tuple[str, ...],
     min_notional: float,
     max_premium: float,
     min_volume: int,
 ) -> None:
-    for symbol in universe:
-        for sig in _scan_underlying(
-            client,
-            symbol,
-            min_notional=min_notional,
-            max_premium=max_premium,
-            min_volume=min_volume,
-        ):
-            if ctx.risk_off and sig.direction == "bull":
-                sig.conviction *= 0.9
+    """
+    Cheap lotto detector v2.
+
+    Criteria (per contract):
+      - premium (last trade) <= max_premium
+      - volume >= min_volume
+      - notional = last * volume * 100 >= min_notional
+      - contract not expired
+    """
+    for underlying in universe:
+        try:
+            contracts = _fetch_contracts_for_underlying(client, underlying)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Cheap lottos: failed to fetch contracts for %s: %s", underlying, exc)
+            continue
+
+        for contract in contracts:
+            ticker = contract.get("ticker")
+            if not ticker:
+                continue
+
+            # contract_type can be "call" / "put" (string) or "C"/"P" depending on Polygon
+            ctype = (contract.get("contract_type") or contract.get("type") or "").lower()
+            if ctype not in ("call", "put"):
+                continue
+
+            exp_str = contract.get("expiration_date")
+            if not exp_str:
+                continue
+
+            try:
+                expiry = datetime.fromisoformat(exp_str).date()
+            except Exception:  # noqa: BLE001
+                continue
+
+            dte = (expiry - date.today()).days
+            if dte < 0:
+                # already expired or same-day option after close
+                continue
+
+            try:
+                agg = _fetch_latest_minute_agg(client, ticker)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("Cheap lottos: agg error for %s: %s", ticker, exc)
+                continue
+
+            if not agg:
+                continue
+
+            last = float(agg.get("c") or 0.0)
+            volume = int(agg.get("v") or 0)
+
+            if last <= 0:
+                continue
+            if volume < min_volume:
+                continue
+            if last > max_premium:
+                continue
+
+            notional = last * volume * 100.0
+            if notional < min_notional:
+                continue
+
+            direction = "bull" if ctype == "call" else "bear"
+
+            # Basic conviction: scale with notional relative to threshold
+            raw_conv = 0.5 + (notional / max(min_notional * 3.0, 1.0))
+            conviction = max(0.6, min(raw_conv, 0.99))
+
+            reasons = [
+                "cheap_premium",
+                f"volume≈{volume}",
+                f"notional≈${int(notional):,}",
+                f"underlying={underlying}",
+            ]
+
+            extra = {
+                "underlying": underlying,
+                "option_ticker": ticker,
+                "last": last,
+                "volume": volume,
+                "notional": notional,
+                "dte": dte,
+                "expiration_date": expiry.isoformat(),
+                "kind": "cheap_lottos_v2",
+            }
+
+            sig = Signal(
+                kind="CHEAP_LOTTOS",
+                symbol=ticker,
+                direction=direction,
+                conviction=round(conviction, 2),
+                reasons=reasons,
+                extra=extra,
+            )
             bus.publish(sig)
+
+        log.info("Cheap lottos: processed %d contracts for %s", len(contracts), underlying)
