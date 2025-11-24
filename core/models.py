@@ -34,6 +34,9 @@ class MarketContext:
     """
     Snapshot of overall market regime that bots / aggregator can use
     to tune behavior.
+
+    NOTE: keep this in sync with core.context.MarketContext. At runtime
+    we mostly treat it as a structural type.
     """
 
     as_of: datetime
