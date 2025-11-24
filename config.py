@@ -1,7 +1,6 @@
 # config.py
 import os
 from dataclasses import dataclass
-
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -19,12 +18,12 @@ class Settings:
     # Base universe for all equity/option bots
     underlying_universe: tuple = ("SPY", "QQQ", "TSLA", "NVDA")
 
-    # Cheap lotto options
+    # Cheap lotto options  (DISABLED FOR NOW)
     cheap_min_notional: float = 50_000.0
     cheap_max_premium: float = 1.50
     cheap_min_volume: int = 100
 
-    # UNUSUAL sweeps
+    # UNUSUAL sweeps  (DISABLED FOR NOW)
     unusual_min_notional: float = 100_000.0
     unusual_min_size: int = 50
     unusual_max_dte: int = 45
@@ -77,8 +76,8 @@ class Settings:
     earnings_min_rvol: float = 2.0
     earnings_min_dollar_vol: float = 10_000_000.0
 
-    # Option picker
-    option_picker_enabled: bool = True
+    # Option picker (DISABLED — Polygon snapshots 404)
+    option_picker_enabled: bool = False
     option_picker_target_dte: int = 30
     option_picker_min_dte: int = 7
     option_picker_max_dte: int = 60
@@ -94,7 +93,7 @@ def get_settings() -> Settings:
 
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
     tg_chat = os.getenv("TELEGRAM_CHAT_ID")
-    tg_status = os.getenv("TELEGRAM_STATUS_CHAT_ID")  # optional
+    tg_status = os.getenv("TELEGRAM_STATUS_CHAT_ID")
 
     if not (tg_token and tg_chat):
         raise RuntimeError("Missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID env variables")
