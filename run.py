@@ -32,13 +32,7 @@ logging.basicConfig(
 log = logging.getLogger("runner")
 
 
-def _run_bot_safely(
-    bot_name: str,
-    fn,
-    status_reporter: StatusReporter,
-    *args,
-    **kwargs,
-) -> None:
+def _run_bot_safely(bot_name: str, fn, status_reporter: StatusReporter, *args, **kwargs) -> None:
     start = perf_counter()
     try:
         fn(*args, **kwargs)
@@ -208,7 +202,8 @@ def main() -> None:
                 move_min_down_pct=settings.squeeze_down_move_min_pct,
                 intraday_min_down_pct=settings.squeeze_down_intraday_min_pct,
                 min_rvol=settings.squeeze_down_min_rvol,
-                min_dollar_vol=settings.squeeze_down_min_dollar,
+                # ✅ FIXED: use the correct settings field name
+                min_dollar_vol=settings.squeeze_down_min_dollar_vol,
                 max_dist_from_low_pct=settings.squeeze_down_max_dist_from_low_pct,
             )
 
