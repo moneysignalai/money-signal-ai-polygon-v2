@@ -1,7 +1,10 @@
 # bots/options_cheap_lottos.py
 
+from __future__ import annotations
+
 import logging
 from datetime import date, datetime
+from typing import List, Dict, Any, Optional
 
 from core.models import Signal
 from core.polygon_client import PolygonClient
@@ -12,7 +15,7 @@ log = logging.getLogger(__name__)
 _MAX_CONTRACTS_PER_UNDERLYING = 25
 
 
-def _fetch_contracts_for_underlying(client: PolygonClient, underlying: str) -> list[dict]:
+def _fetch_contracts_for_underlying(client: PolygonClient, underlying: str) -> List[Dict[str, Any]]:
     """
     Use Polygon v3 reference contracts to get a small, recent set of options
     for the given underlying.
@@ -20,7 +23,7 @@ def _fetch_contracts_for_underlying(client: PolygonClient, underlying: str) -> l
     Docs: /v3/reference/options/contracts
     """
     path = "/v3/reference/options/contracts"
-    params = {
+    params: Dict[str, Any] = {
         "underlying_ticker": underlying.upper(),
         "expired": "false",
         "order": "asc",
@@ -34,28 +37,25 @@ def _fetch_contracts_for_underlying(client: PolygonClient, underlying: str) -> l
     return results
 
 
-def _fetch_latest_minute_agg(client: PolygonClient, option_ticker: str) -> dict | None:
+def _fetch_latest_agg(client: PolygonClient, option_ticker: str) -> Optional[Dict[str, Any]]:
     """
-    Get the latest 1‑minute aggregate for an option contract.
+    Get the latest aggregate bar for an option contract.
 
-    Docs: /v2/aggs/ticker/{ticker}/range/1/min/{from}/{to}
+    We deliberately use daily bars over a short lookback to avoid
+    same‑day 400 issues on /v2/aggs.
+
+    Under the hood this calls PolygonClient.get_latest_option_agg.
     """
-    today = date.today().isoformat()
-    path = f"/v2/aggs/ticker/{option_ticker}/range/1/min/{today}/{today}"
-    params = {
-        "limit": 1,
-        "sort": "desc",
-    }
-
-    data = client.get(path, params)
-    results = data.get("results") or []
-    if not results:
-        return None
-    return results[0]
+    return client.get_latest_option_agg(
+        option_ticker,
+        lookback_days=7,
+        multiplier=1,
+        timespan="day",
+    )
 
 
 def run(
-    client,
+    client: PolygonClient,
     bus,
     ctx,
     *,
@@ -73,6 +73,8 @@ def run(
       - notional = last * volume * 100 >= min_notional
       - contract not expired
     """
+    today = date.today()
+
     for underlying in universe:
         try:
             contracts = _fetch_contracts_for_underlying(client, underlying)
@@ -99,13 +101,13 @@ def run(
             except Exception:  # noqa: BLE001
                 continue
 
-            dte = (expiry - date.today()).days
+            dte = (expiry - today).days
             if dte < 0:
                 # already expired or same-day option after close
                 continue
 
             try:
-                agg = _fetch_latest_minute_agg(client, ticker)
+                agg = _fetch_latest_agg(client, ticker)
             except Exception as exc:  # noqa: BLE001
                 log.debug("Cheap lottos: agg error for %s: %s", ticker, exc)
                 continue
