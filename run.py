@@ -10,11 +10,10 @@ from core.alerting import TelegramConfig, Dispatcher
 from core.aggregator import aggregate_signals
 from core.bus import SignalBus
 from core.context import compute_market_context
+from core.option_picker import pick_simple_option_for_signal
 from core.polygon_client import PolygonClient
 from core.status_report_v2 import StatusReporter
-from core.option_picker import pick_simple_option_for_signal
 
-# BOTS
 from bots.options_cheap_lottos import run as run_cheap_lottos
 from bots.options_unusual import run as run_unusual
 from bots.volume_monster import run as run_volume_monster
@@ -47,7 +46,6 @@ def _run_bot_safely(bot_name: str, fn, status_reporter: StatusReporter, *args, *
 
 def main() -> None:
     settings = get_settings()
-
     client = PolygonClient(api_key=settings.polygon_api_key)
     bus = SignalBus()
 
@@ -66,7 +64,7 @@ def main() -> None:
 
     status_reporter = StatusReporter(
         tg_config=status_tg_config,
-        report_interval_seconds=600,  # 10‑min heartbeat
+        report_interval_seconds=600,  # heartbeat every 10 min
     )
 
     log.info("Starting v2 scanner loop...")
@@ -81,10 +79,7 @@ def main() -> None:
                 ctx.risk_off,
             )
 
-            # ---------------------------------------------------------
-            # 1) BOTS
-            # ---------------------------------------------------------
-
+            # 1) Run all bots safely, recording status
             _run_bot_safely(
                 "cheap_lottos",
                 run_cheap_lottos,
@@ -169,7 +164,7 @@ def main() -> None:
                 client,
                 bus,
                 ctx,
-                universe=settings.trend_breakdown_min_price,
+                universe=settings.underlying_universe,  # ✅ FIXED: now a tuple, not a float
                 min_price=settings.trend_breakdown_min_price,
                 max_price=settings.trend_breakdown_max_price,
                 min_dollar_vol=settings.trend_breakdown_min_dollar_vol,
@@ -227,19 +222,17 @@ def main() -> None:
                 min_dollar_vol=settings.earnings_min_dollar_vol,
             )
 
-            # ---------------------------------------------------------
-            # 2) Aggregate → Attach options → Dispatch
-            # ---------------------------------------------------------
-
+            # 2) Aggregate & dispatch
             raw_signals = bus.drain()
             if raw_signals:
                 log.info("Collected %s raw signals", len(raw_signals))
 
             final_signals = aggregate_signals(raw_signals, ctx)
 
+            # Attach options plays to stock signals
             if settings.option_picker_enabled:
                 for sig in final_signals:
-                    # Only attach options to "clean" symbols
+                    # crude: only attach if symbol looks like underlying (no space)
                     if " " in sig.symbol:
                         continue
                     opt = pick_simple_option_for_signal(
@@ -255,10 +248,7 @@ def main() -> None:
             for sig in final_signals:
                 dispatcher.dispatch(sig, ctx)
 
-            # ---------------------------------------------------------
             # 3) Status heartbeat
-            # ---------------------------------------------------------
-
             status_reporter.maybe_report()
 
         except Exception as exc:  # noqa: BLE001
