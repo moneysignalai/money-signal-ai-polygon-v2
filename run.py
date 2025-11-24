@@ -12,6 +12,7 @@ from core.bus import SignalBus
 from core.context import compute_market_context
 from core.polygon_client import PolygonClient
 from core.status_report_v2 import StatusReporter
+from core.option_picker import pick_simple_option_for_signal
 
 # BOTS
 from bots.options_cheap_lottos import run as run_cheap_lottos
@@ -38,7 +39,7 @@ def _run_bot_safely(bot_name: str, fn, status_reporter: StatusReporter, *args, *
         fn(*args, **kwargs)
         runtime = perf_counter() - start
         status_reporter.record_success(bot_name, runtime)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         runtime = perf_counter() - start
         status_reporter.record_error(bot_name, exc, runtime)
         log.exception("Bot %s failed: %s", bot_name, exc)
@@ -84,7 +85,6 @@ def main() -> None:
             # 1) BOTS
             # ---------------------------------------------------------
 
-            # Cheap lotto options (v2, using contracts + aggs)
             _run_bot_safely(
                 "cheap_lottos",
                 run_cheap_lottos,
@@ -98,7 +98,6 @@ def main() -> None:
                 min_volume=settings.cheap_min_volume,
             )
 
-            # UNUSUAL options (v2, using contracts + aggs)
             _run_bot_safely(
                 "unusual_sweeps",
                 run_unusual,
@@ -170,7 +169,7 @@ def main() -> None:
                 client,
                 bus,
                 ctx,
-                universe=settings.underlying_universe,
+                universe=settings.trend_breakdown_min_price,
                 min_price=settings.trend_breakdown_min_price,
                 max_price=settings.trend_breakdown_max_price,
                 min_dollar_vol=settings.trend_breakdown_min_dollar_vol,
@@ -229,7 +228,7 @@ def main() -> None:
             )
 
             # ---------------------------------------------------------
-            # 2) Aggregate → Dispatch
+            # 2) Aggregate → Attach options → Dispatch
             # ---------------------------------------------------------
 
             raw_signals = bus.drain()
@@ -238,8 +237,20 @@ def main() -> None:
 
             final_signals = aggregate_signals(raw_signals, ctx)
 
-            # Option picker still disabled (config.option_picker_enabled=False)
-            # We can rebuild this later on top of the new options data approach.
+            if settings.option_picker_enabled:
+                for sig in final_signals:
+                    # Only attach options to "clean" symbols
+                    if " " in sig.symbol:
+                        continue
+                    opt = pick_simple_option_for_signal(
+                        sig,
+                        client,
+                        target_dte=settings.option_picker_target_dte,
+                        min_dte=settings.option_picker_min_dte,
+                        max_dte=settings.option_picker_max_dte,
+                    )
+                    if opt:
+                        sig.extra["options_play"] = opt
 
             for sig in final_signals:
                 dispatcher.dispatch(sig, ctx)
