@@ -14,10 +14,8 @@ from core.polygon_client import PolygonClient
 from core.status_report_v2 import StatusReporter
 
 # BOTS
-# (Options bots disabled due to Polygon snapshot 404)
-# from bots.options_cheap_lottos import run as run_cheap_lottos
-# from bots.options_unusual import run as run_unusual
-
+from bots.options_cheap_lottos import run as run_cheap_lottos
+from bots.options_unusual import run as run_unusual
 from bots.volume_monster import run as run_volume_monster
 from bots.orb_breakout import run as run_orb_breakout
 from bots.dark_pool_radar import run as run_dark_pool_radar
@@ -83,11 +81,36 @@ def main() -> None:
             )
 
             # ---------------------------------------------------------
-            # BOTS (option bots disabled temporarily)
+            # 1) BOTS
             # ---------------------------------------------------------
 
-            # _run_bot_safely("cheap_lottos", run_cheap_lottos, status_reporter, ...)
-            # _run_bot_safely("unusual_sweeps", run_unusual, status_reporter, ...)
+            # Cheap lotto options (v2, using contracts + aggs)
+            _run_bot_safely(
+                "cheap_lottos",
+                run_cheap_lottos,
+                status_reporter,
+                client,
+                bus,
+                ctx,
+                universe=settings.underlying_universe,
+                min_notional=settings.cheap_min_notional,
+                max_premium=settings.cheap_max_premium,
+                min_volume=settings.cheap_min_volume,
+            )
+
+            # UNUSUAL options (v2, using contracts + aggs)
+            _run_bot_safely(
+                "unusual_sweeps",
+                run_unusual,
+                status_reporter,
+                client,
+                bus,
+                ctx,
+                universe=settings.underlying_universe,
+                min_notional=settings.unusual_min_notional,
+                min_size=settings.unusual_min_size,
+                max_dte=settings.unusual_max_dte,
+            )
 
             _run_bot_safely(
                 "volume_monster",
@@ -215,8 +238,8 @@ def main() -> None:
 
             final_signals = aggregate_signals(raw_signals, ctx)
 
-            # No option picker right now (due to Polygon 404)
-            # But the block remains for future support
+            # Option picker still disabled (config.option_picker_enabled=False)
+            # We can rebuild this later on top of the new options data approach.
 
             for sig in final_signals:
                 dispatcher.dispatch(sig, ctx)
@@ -227,7 +250,7 @@ def main() -> None:
 
             status_reporter.maybe_report()
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             log.exception("Error in main loop: %s", exc)
 
         log.info("Sleeping %s seconds...", settings.scan_interval_seconds)
