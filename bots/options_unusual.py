@@ -1,5 +1,7 @@
 # bots/options_unusual.py
 
+from __future__ import annotations
+
 import logging
 from datetime import date, datetime
 
@@ -152,9 +154,8 @@ def run(
                 "kind": "unusual_v2",
             }
 
-            # NOTE: first positional arg is the signal type
+            # IMPORTANT: no "kind=" kwarg here; Signal doesn't accept it.
             sig = Signal(
-                "UNUSUAL",
                 symbol=ticker,
                 direction=direction,
                 conviction=round(conviction, 2),
