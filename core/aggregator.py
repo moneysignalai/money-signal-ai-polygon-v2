@@ -5,13 +5,12 @@ import logging
 from collections import defaultdict
 from typing import List
 
-from core.context import MarketContext
 from core.models import Signal
 
 log = logging.getLogger(__name__)
 
 
-def aggregate_signals(signals: List[Signal], ctx: MarketContext) -> List[Signal]:
+def aggregate_signals(signals: List[Signal], ctx) -> List[Signal]:
     """
     Very lightweight, robust signal aggregator.
 
@@ -22,9 +21,8 @@ def aggregate_signals(signals: List[Signal], ctx: MarketContext) -> List[Signal]
         * merges extra dicts (later keys overwrite earlier)
     - Does NOT depend on any optional attributes like `timeframe`.
 
-    If you want to add more advanced logic later (e.g. weighting by
-    bot type, risk_off filtering, etc.), you can build it on top of
-    this without introducing hard dependencies on extra fields.
+    `ctx` is currently unused, but kept in the signature so you can add
+    regime-aware logic later without changing callers.
     """
     if not signals:
         return []
